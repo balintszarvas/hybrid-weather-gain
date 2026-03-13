@@ -2,7 +2,7 @@
 
 A hybrid weather forecasting model that combines [Dinosaur](https://github.com/google-research/dinosaur)'s differentiable spectral dynamical core with a Graph Neural Network (GNN) correction module, trained end-to-end on ERA5 reanalysis data using JAX.
 
-This codebase accompanies the thesis *"Hybrid Weather Prediction with Graph Neural Network Corrections to a Differentiable Dynamical Core"* (ETH Zurich, 2025).
+This codebase accompanies the thesis *"Revealing Cross-Scale Interactions in Hybrid Weather Models"* (University of Amsterdam, ETH Zurich, 2025).
 
 ## Overview
 
@@ -11,6 +11,7 @@ Traditional numerical weather prediction solves the primitive equations on a sph
 1. **Dinosaur dynamical core** — solves the hydrostatic primitive equations in spectral (spherical harmonic) space using a semi-implicit time integration scheme.
 2. **GNN correction module** — a message-passing graph neural network (built with [Jraph](https://github.com/google/jraph)) that learns residual corrections to the dynamical core's tendencies at each correction step.
 3. **End-to-end training** — the full hybrid model is trained through the dynamical core via JAX's automatic differentiation, using ERA5 reanalysis as ground truth.
+4. **Gain experiment (cross-scale interactions)** — beyond forecast error, the repository studies correction gain as a function of wavenumber to quantify where the learned correction amplifies or damps dynamics across scales.
 
 The model supports multiple spectral truncations (TL31, TL47, TL63, TL95, TL127) and a curriculum training strategy that progressively extends the forecast horizon from 6 hours to multiple days.
 
@@ -199,7 +200,7 @@ If you use this code in your research, please cite:
 
 ```bibtex
 @mastersthesis{szarvas2025hybrid,
-  title={Hybrid Weather Prediction with Graph Neural Network Corrections to a Differentiable Dynamical Core},
+  title={Revealing Cross-Scale Interactions in Hybrid Weather Models},
   author={Szarvas, Balint},
   school={ETH Zurich},
   year={2025}
