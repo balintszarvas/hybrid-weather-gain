@@ -1,0 +1,42 @@
+# Core ML framework
+jax[cuda12]>=0.4.20
+jaxlib>=0.4.20
+flax>=0.8.0
+optax>=0.1.7
+orbax-checkpoint>=0.5.0
+
+# Graph neural networks
+jraph>=0.0.6.dev0
+
+# Data handling
+numpy>=1.24.0
+scipy>=1.10.0
+xarray>=2023.1.0
+xarray-tensorstore>=0.1.0
+dask>=2023.1.0
+zarr>=2.14.0
+fsspec>=2023.1.0
+gcsfs>=2023.1.0
+pandas>=2.0.0
+
+# Evaluation
+weatherbench2>=0.1.0
+apache-beam>=2.50.0
+
+# Logging and monitoring
+wandb>=0.15.0
+
+# Utilities
+absl-py>=1.4.0
+tqdm>=4.65.0
+pint>=0.22
+scikit-learn>=1.2.0
+tree-math>=0.1.0
+
+# Plotting (for analysis scripts)
+matplotlib>=3.7.0
+cartopy>=0.21.0
+
+# Dinosaur and NeuralGCM (install from local source)
+# pip install -e google_train/dinosaur-main
+# pip install -e google_train/neuralgcm-main

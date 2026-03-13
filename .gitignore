@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Weights & Biases
+wandb/
+
+# Model artifacts
+checkpoints/
+models/*.pkl
+
+# Results and data (too large for git)
+weatherbench_results/
+*.nc
+*.zarr
+
+# Internal HPC job scripts (excluded from open-source snapshot)
+jobs/
+
+# Plotting / analysis scripts (excluded from open-source snapshot)
+plot*.py
+energy_spectrum.py
+figures.py
+
+# Local third-party source mirrors (kept locally, not published)
+google_train/
+
+# Profiling
+gmon.out
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.pdf
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+*.env
+
+# Cursor
+.cursorignore
+.cursor/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Tensorboard
+tensorboard_logs/

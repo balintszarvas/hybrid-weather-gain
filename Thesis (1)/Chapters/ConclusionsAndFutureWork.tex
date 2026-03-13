@@ -1,0 +1,35 @@
+\chapter{Conclusion and future work}
+\label{CAFW}
+
+\section{Conclusion}
+
+This thesis set out to develop a fully differentiable hybrid weather forecasting model and to investigate whether the interaction between its learned closure and its spectral dynamical core can be characterised in a scale-aware, interpretable manner. The work delivers three contributions.
+
+\paragraph{A differentiable hybrid architecture with demonstrated data efficiency.}
+We coupled a spectral primitive-equation solver with a GNN-based neural closure and trained the system end-to-end through autoregressive rollouts in JAX. The hybrid model consistently outperformed both dycore-only and ML-only variants, and did so with markedly less training data than the purely neural alternative. The ablation comparing online (trajectory-fitting) and offline (single-step) training further showed that optimising the closure on the distribution of states actually produced by the coupled solver improves accuracy at all lead times, confirming the practical value of full differentiability.
+
+\paragraph{Characterisation of resolution--performance trade-offs.}
+Across seven atmospheric variables, five spectral truncations, and lead times from 6\,h to several days, forecast skill exhibited a non-monotonic dependence on grid resolution. Finer grids improved short-range predictions but often degraded longer-range forecasts, with the highest resolution (TL127) underperforming intermediate grids for several dynamical variables. This behaviour reflects the joint effect of chaotic error growth at fine scales, reduced per-node closure capacity under fixed compute budgets, and the double-penalty sensitivity of MSE. The result argues against selecting resolution from a single aggregate score and in favour of jointly tuning resolution, closure capacity, and training objective.
+
+\paragraph{Spectral gain analysis as an interpretability diagnostic.}
+The primary methodological contribution is the Jacobian-based spectral gain experiment, which linearises the learned closure around coupled forecast states and projects the resulting tendency modification onto the spherical-harmonic basis. The analysis revealed that the closure predominantly amplifies dynamical-core tendencies---consistent with the energy-backscatter mechanism documented in idealised turbulence closures \citep{guan2022stable, subel2023explaining}---but does so in a scale-selective and horizon-dependent manner. At large spatial scales, damping dominates, stabilising the slowly evolving flow; at small scales, amplification restores variability lost to truncation and filtering. A pronounced amplification peak near the spectral-filter cutoff confirms that the closure compensates for the artificial damping imposed by the numerical core, while the progressive shift from amplification to damping with increasing lead time reflects the over-smoothing pressure of MSE-based training on chaotic trajectories.
+
+These gain diagnostics extend prior Jacobian-based interpretability work \citep{Portwood2021} from single-scale isotropic turbulence to a multi-variable, three-dimensional atmospheric model on the sphere. Compared with weight-space methods such as SPARK \citep{subel2023explaining}, the gain analysis is architecture-agnostic---it interrogates the input--output behaviour of the closure rather than its internal parameterisation---making it transferable, in principle, to any differentiable closure. Critically, this form of analysis was enabled by our choice of a spatially connected GNN over the column-wise MLP used in NeuralGCM \citep{neuralgcm}: only a horizontally connected closure produces a Jacobian with spatial structure that can be meaningfully projected onto a wavenumber basis.
+
+\section{Future work}
+
+The limitations identified in Chapter~\ref{Discussion} point toward several natural extensions.
+
+\begin{itemize}
+    \item \textbf{Richer evaluation metrics.} Replacing or supplementing MSE with scale-aware and structure-aware verification---such as spectral skill scores, fractions skill score, or object-based measures---would reduce sensitivity to displacement penalties and provide a more physically meaningful assessment of forecast quality. Training under such losses may also alter the closure's gain profile, potentially mitigating the over-smoothing at long lead times.
+
+    \item \textbf{Decoupling resolution from closure capacity.} The current resolution-aware scaling confounds grid refinement with reduced per-node expressivity. Future experiments should match per-node hidden width across resolutions, or explore adaptive-capacity strategies such as multiscale message passing or resolution-specific heads, to isolate the true effect of resolution on closure behaviour.
+
+    \item \textbf{Extending the gain analysis to additional variables and regimes.} The present gain results use only the temperature-variation field. Computing gains for vorticity, divergence, and moisture would reveal whether the scale-selective pattern generalises across variable families. Conditioning the gain on flow regime (e.g.\ blocking events, tropical cyclones) would further test the robustness and physical interpretability of the diagnostic.
+
+    \item \textbf{Probabilistic extensions.} All current results are deterministic. Extending the model to ensemble or diffusion-based formulations would allow the gain framework to be applied to ensemble-mean and ensemble-spread tendencies, connecting the closure's scale selectivity to forecast uncertainty.
+
+    \item \textbf{Higher-order and nonlinear diagnostics.} The gain is a linear (first-order) diagnostic. Developing second-order or nonlinear extensions---for instance, by analysing the curvature of the closure or by tracking finite-amplitude perturbation growth---would capture interaction effects that the current linearisation misses.
+\end{itemize}
+
+More broadly, the dual perspective pursued in this thesis---evaluating hybrid models not only by endpoint accuracy but also by how learned and physical operators exchange energy across scales---offers a template for interpretable neural closure modelling in other multiscale physical systems, from ocean eddy parameterisation to turbulent combustion. As data-driven components become increasingly embedded in operational simulation pipelines, scale-aware diagnostics of the kind proposed here will be essential for building justified confidence in hybrid predictions.

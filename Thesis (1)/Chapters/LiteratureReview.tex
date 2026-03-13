@@ -1,0 +1,174 @@
+\chapter{Theoretical background}
+\label{LR}
+In this chapter, we provide the theoretical background necessary to understand the construction of our model and discuss the relevant literature. We begin by introducing the theory of neural closure modelling, which serves as the guiding principle of our approach. We then introduce the problem of weather modelling, discuss current state-of-the-art approaches, and explain why this task benefits from being formulated as a closure problem. Finally, we review these approaches through the lens of interpretability and contrast our method with previous contributions.
+
+\section{Neural Closure Modeling}
+\label{sec:formal_closure}
+
+Let us consider a system, described by (potentially unknown) partial differential equations of the form:
+\begin{equation}
+    \label{eq:fullmodel}
+    \mathcal{L}(q,\mu)=0
+\end{equation}
+where $\mathcal{L}$ is the operator, which can contain spatial or temporal derivatives of any order, $\mu$ denotes PDE parameters such as forcings, initial or boundary conditions, and $q(x,t)$ is the solution operator. Equation \ref{eq:fullmodel} will represent the full model of the system, including known and unknown terms. In our setting, this is interpreted as a complete model of the atmosphere. The full states $q(x,t)$ correspond to the timepoints of the ERA5 dataset at full resolution.
+
+Through some reduction operation, such as spatial convolution, spectral truncation or averaging, the degrees of freedom of the solution $q(x,t)$ can be reduced, obtaining the reduced field $\Tilde{q}(x,t)$. Denoting the reduction operator by $\mathcal{F}$, this corresponds to the following operation:
+\begin{equation}
+    \label{eq:reduction}
+    \Tilde{q}:=\mathcal{F}q
+\end{equation}
+
+In our setting, the reduction operation encompasses the spatial regridding and interpolation of the empiricial data. Thus, moving forward, the goal will be to accurately learn an approximation of $\Tilde{q}$.
+
+Since in general $\Tilde{q}$ is not a solution of Equation \ref{eq:fullmodel}, a common approach is to formulate a reduced model $\boldsymbol{B}$, with parameters $\theta$, describing the approximation $\Tilde{g}\approx \Tilde{q}$. 
+\begin{equation}
+    \label{eq:filteredmodel}
+    \boldsymbol{B}_{\theta}(\Tilde{g}, \mu) = 0
+\end{equation}
+
+Note that this approximation does not explicitly depend on $q$. In fact, we changed the dependence from $\Tilde{q}$ to $\Tilde{g}$, because the solution of equation \ref{eq:reducedmodel} in general is not equivalent to the reduced solution field $\Tilde{q}$, since that requires a knowledge of the full solution field $q$. The vector $\theta$ here denotes the parameters of eg. polynomials or in our case neural networks, which are to be empirically optimised with relation to the desired loss function.
+
+Thus, the main interest becomes the derivation of $\boldsymbol{B}$. Since the complete system of PDEs describing it's evolution is not known, traditional methods such as finite elements or finite volume can not be applied and alternative, learning based model discovery is necessary.
+
+A natural choice is to find a $\boldsymbol{B}$ that approximates the filtered model $\Tilde{\mathcal{L}}$. Then applying the reduction operator yields:
+
+\begin{equation}
+    \label{eq:closure}
+    \Tilde{\mathcal{L}}(q, \mu):=\boldsymbol{\mathcal{F}}(\mathcal{L}(q,\mu) = 0 \; \rightarrow \; 
+    \Tilde{\mathcal{L}}(\Tilde{q}, \mu) + \mathcal{C}(q,\Tilde{q},\mu) = 0
+\end{equation}
+
+where
+\begin{equation}
+    \label{eq:closuredef}
+    \boldsymbol{C}(q,\Tilde{q},\mu) =  \Tilde{\mathcal{L}}(q, \mu) - \mathcal{L}(\Tilde{q},\mu)
+\end{equation}
+
+What this tells us is that it is not possible to obtain a solution of the original PDE for the reduced field, since the reduction step and the operator does not in general commute, thus rendering the equation for $\Tilde{\mathcal{L}}$ unclosed. A common approach thus is to approximate the commutator error $\boldsymbol{C}$ by a model $\mathrm{nn}_{\theta}(\Tilde{q},\mu) \approx \mathcal{C}(q,\Tilde{q},\mu)$ such that the reduced model $\boldsymbol{B}$ becomes:
+
+\begin{equation}
+    \label{eq:reducedmodel}
+    \boldsymbol{B_{\theta}}(\Tilde{g}, \mu) =  \Tilde{\mathcal{L}}(\Tilde{g}, \mu) + \mathrm{nn}_{\theta}(\Tilde{q},\mu)
+\end{equation}
+
+where $\mathrm{nn}_{\theta}$ is the learned closure term. We denote the closure term by common neural-network notation, since in our case we are using a neural network, but note that this can be any function with learnable parameters.
+
+This formulation captures the standard definition of neural closure modeling. Note, however, that our setting differs slightly from this picture. In particular, the above derivation assumes that the reduced operator $\Tilde{\mathcal{L}}$ is obtained by applying the same reduction operator $\mathcal{F}$ to the full model $\mathcal{L}$ that is used to reduce the full state $q$ to $\Tilde{q}$. In that case, the discrepancy between $\Tilde{\mathcal{L}}$ and $\mathcal{L}(\Tilde{q},\mu)$ is precisely the commutator error $\mathcal{C}(q,\Tilde{q},\mu)$, and the learned term $\mathrm{nn}_\theta$ approximates this quantity.
+
+In our setting, however, neither the full operator $\mathcal{L}$ nor its exact reduced image $\Tilde{\mathcal{L}}$ is known explicitly. Instead, we posit a resolved operator $\mathcal{R}$, given by the primitive equations, as a heuristic approximation to the unknown reduced dynamics, so that
+\[
+\mathcal{R} \approx \Tilde{\mathcal{L}}.
+\]
+Here, $\mathcal{R}$ is not derived by coarse-graining the unknown full model, but is introduced on physical and modeling grounds as a mechanistic approximation of the large-scale resolved evolution.
+
+Consequently, the learned term should not be interpreted as approximating only the commutator error. Rather, it serves as an effective discrepancy correction relative to the primitive-equation core, compensating not only for unresolved-scale interactions, but also for the structural mismatch between $\mathcal{R}$ and the unknown effective reduced operator governing the ERA5-represented dynamics. This discrepancy may include missing physical processes, model-form errors, and discretization effects. Accordingly, in our application $\boldsymbol{B}_\theta$ should be understood as a hybrid reduced model consisting of a mechanistic resolved operator $\mathcal{R}$ and a learned correction term, rather than as the exact coarse-grained image of a known full model \cite{Sanderse2025}.
+
+\subsection{A posteriori learning}
+The closure formulation introduces a parameterized term \(\mathrm{nn}_{\theta}\), whose parameters \(\theta\) must be optimized to satisfy the requirements set out previously. This leads naturally to an optimization problem for a suitable objective function. A common approach is the \emph{a priori} (also called \emph{offline} or \emph{direct}) approach, in which \(\theta\) is learned by minimizing the discrepancy with respect to reference data \(\tilde{q}\) from the original solution space. A typical loss function minimizes the commutator error,
+\begin{equation}
+    \label{eq:apriori}
+    \textit{L}_{\theta}(\hat{q}, q)
+    = \big\|\, \mathrm{nn}_{\theta}(\hat{q}, \mu) \;-\; \mathbf{C}(q, \tilde{q}, \mu) \,\big\|^{2},
+\end{equation}
+where \(\mathbf{C}\) is the analytical commutator error defined in \eqref{eq:closuredef}. Notably, the training happens "offline", without solving the reduced model \eqref{eq:filteredmodel}. While straightforward, this decoupled training can lead to a mismatch between training and deployment: small inconsistencies accumulate when the learned operator is used inside the solver, so that the simulated trajectory \(\hat{q}(t)\) drifts from the reference \(\tilde{q}(t)\), potentially causing numerical instability and climate drift \cite{kurz2021investigating,brenowitz2019spatially}. 
+
+These limitations motivate \emph{a posteriori} (online, in-the-loop) learning, wherein \(\theta\) is optimized while interacting with the governing equations, ie:
+\begin{equation}
+    \label{eq:aposteriori}
+    \textit{L}_{\theta}(\Tilde{g}, \Tilde{q})
+    = \big\| \, \Tilde{g}_{\theta} \;-\; \Tilde{q} \,\big\|^{2},
+\end{equation}
+
+This is sometimes also called as trajectory fitting. The greatest advantage of this formulation is that now the loss depends on the predictions of the reduced model $\boldsymbol{B_{\theta}}$, which depends on the parameters $\theta$. Training the model this way thus ensures that the learned operator is optimized on the distribution of states actually encountered by the reduced solver \(\mathbf{B}_{\theta}\), thereby promoting numerical stability and physical fidelity over long integrations. The difficulty with this approach, however, is that to backpropagate the loss through all simulation steps—including the evaluations of \(\mathrm{nn}_{\theta}\)—the entire model, solver included, must be differentiable. This is not guaranteed in general and typically requires a fully differentiable time integrator and numerical operators. We address this by employing a differentiable dynamical core and leveraging JAX’s automatic differentiation capabilities, detailed in Chapter \ref{Methods} \cite{neuralgcm,jax}.
+
+\section{Atmospheric Modeling}
+
+\subsection{History}
+Modern atmospheric modelling grew out of Vilhelm Bjerknes’s early 20th–century program to cast forecasting as time integration of the governing fluid–thermodynamic equations \cite{primitiveeqs}. He identified seven variables defining the state of the atmosphere at a given time: pressure, density, humidity, temperature and the flow velocity vector components. These to this day form the basis of the primitive equations, used in today's weather models. Lewis Fry Richardson’s 1922 book then laid out the first full numerical procedure and produced the first (hand–computed) forecast, albeit with very large error \cite{richardson1922weather}. The first successful computer forecast followed on ENIAC in 1950 under Charney, Fjørtoft and von Neumann, demonstrating practical feasibility; routine operational forecasts began in Sweden in 1954 \cite{charney1950numerical}. In Europe, medium-range global forecasting became operational at ECMWF in 1979, with ensemble prediction entering operations in 1992, setting the stage for today’s high-resolution, probabilistic systems \cite{molteni1996ecmwf}.
+
+\subsection{Primitive Equations}
+The \emph{primitive equations} are the hydrostatic, rotating-sphere form of the atmospheric equations of motion used by most global weather and climate models \cite{primitiveeqs}. They describe the large-scale evolution of the atmosphere as a stratified fluid on a rotating sphere under the hydrostatic approximation. We adopt the hydrostatic approximation and express the horizontal winds in a vorticity--divergence form \cite{charney1955use, robert1966integration}. This is identical to what is used in \citet{neuralgcm}. The prognostic state comprises seven variables:
+$\delta$, $\zeta$, $T$, $\log p_s$, and the three moisture tracers $q$, $q_{ci}$, and $q_{cl}$.
+For efficient time stepping, the temperature on each $\sigma$ level is decomposed as
+$T_\sigma = \bar{T}_\sigma + T'_\sigma$, with the level-wise reference $\bar{T}_\sigma$ and deviation
+$T'_\sigma = T_\sigma - \bar{T}_\sigma$. The governing equations then follow for these variables \cite{neuralgcm}.
+\footnote{Using vorticity--divergence formulations with (hybrid) $\sigma$-type vertical
+coordinates is standard in global dynamical cores; see, e.g., the ECMWF IFS documentation.}
+
+\begin{equation}
+    \label{eq:primitive-sigma}
+    \begin{aligned}
+    &\frac{\partial \zeta}{\partial t}
+    = -\,\nabla \times \Big( (\zeta + f)\,\mathbf{k}\times\mathbf{u}
+    + \dot{\sigma}\,\frac{\partial \mathbf{u}}{\partial \sigma}
+    + R\,T'\,\nabla \log p_s \Big), \\[4pt]
+    &\frac{\partial \delta}{\partial t}
+    = -\,\nabla \cdot \Big( (\zeta + f)\,\mathbf{k}\times\mathbf{u}
+    + \dot{\sigma}\,\frac{\partial \mathbf{u}}{\partial \sigma}
+    + R\,T'\,\nabla \log p_s \Big)
+    - \nabla^{2}\!\left(\frac{\|\mathbf{u}\|^{2}}{2} + \Phi + R\,\overline{T}\,\log p_s\right), \\[4pt]
+    &\frac{\partial T}{\partial t}
+    = -\,\mathbf{u}\cdot\nabla T - \dot{\sigma}\,\frac{\partial T}{\partial \sigma}
+    + \frac{\kappa\,T\,\omega}{p} = -\,\nabla\cdot(\mathbf{u}\,T') + T'\,\delta - \dot{\sigma}\,\frac{\partial T}{\partial \sigma}
+    + \frac{\kappa\,T\,\omega}{p}, \\[4pt]
+    &\frac{\partial q_i}{\partial t}
+    = -\,\nabla\cdot(\mathbf{u}\,q_i) + q_i\,\delta - \dot{\sigma}\,\frac{\partial q_i}{\partial \sigma}, \\[4pt]
+    &\frac{\partial \log p_s}{\partial t}
+    = -\,\frac{1}{p_s}\int_{0}^{1} \nabla\cdot(\mathbf{u}\,p_s)\,d\sigma
+    = -\int_{0}^{1}\!\Big(\delta + \mathbf{u}\cdot\nabla \log p_s\Big)\,d\sigma.
+    \end{aligned}
+\end{equation}
+
+Where the horizontal wind velocity vector is
+$\mathbf{u}=\nabla(\Delta^{-1}\delta)+\mathbf{k}\times\nabla(\Delta^{-1}\zeta)$. Here $f$ is the Coriolis parameter and $\mathbf{k}$ is the upward unit vector. Thermodynamic constants are the ideal-gas constant $R$ and the specific heat at constant pressure $C_p$, with $\kappa=R/C_p$. The diagnosed vertical motion in sigma coordinates is $\dot{\sigma}$, while $\omega\equiv dp/dt$ denotes the (pressure-coordinate) material tendency of pressure. The remaining diagnosed fields are the geopotential $\Phi$, the virtual temperature $T_v$, and the moisture tracers $q_i$.
+
+We compute the diagnostic quantities the following way:
+\begin{equation}
+\label{eq:diagnostics}
+\begin{aligned}
+&\dot{\sigma}_{k+\frac{1}{2}}
+= -\,\sigma_{k+\frac{1}{2}}\,\frac{\partial \log p_s}{\partial t}
+\;-\; \frac{1}{p_s}\int_{0}^{\sigma_{k+\frac{1}{2}}} \nabla\!\cdot\!\big(p_s\,\mathbf{u}\big)\,d\sigma, \\[4pt]
+&\frac{\omega_k}{p_s\,\sigma_k}
+= \mathbf{u}_k\!\cdot\!\nabla \log p_s
+\;-\; \frac{1}{\sigma_k}\int_{0}^{\sigma_k}\!\Big(\delta + \mathbf{u}\!\cdot\!\nabla \log p_s\Big)\,d\sigma, \\[4pt]
+&\Phi_k
+= \Phi_s + R \int_{\log \sigma_k}^{0} T_\nu \, d\!\log \sigma, \\[4pt]
+&T_\nu
+= T\!\left(1 + \left(\frac{R_{vap}}{R}-1\right)\big(q - q_{ci} - q_{cl}\big)\right).
+\end{aligned}
+\end{equation}
+
+\noindent where $\Phi_s = g z_s$ is the geopotential at the surface. Our dynamical core solves these equations, simulating large-scale fluid and thermodynamics, which are influenced by the Coriolis force.
+
+\section{Modern architectures}
+
+
+\subsection{Modern Numerical Models}
+
+Modern numerical weather models are distinguished less by different governing equations than by different choices of dynamical core. Recent reviews emphasize that contemporary global cores span a heterogeneous design space involving grid choice, variable placement, vertical coordinates, time integration, and stabilization, with no single architecture dominating all criteria \cite{Ullrich2017}. At one end, ECMWF's IFS represents the mature spectral-transform tradition, combining fast spectral transforms with a semi-Lagrangian formulation on a reduced Gaussian grid \cite{ECMWFIFS2024}. At the other end, newer non-hydrostatic finite-volume systems prioritize locality and scalability: the IFS-FVM solves the fully compressible equations with semi-implicit time stepping \cite{Kuehnlein2019}; FV3 uses a finite-volume cubed-sphere core with a vertically Lagrangian remap formulation \cite{Harris2021}; ICON employs a non-hydrostatic dynamical core on an icosahedral C-grid \cite{Zangl2015}; and MPAS uses centroidal Voronoi meshes that naturally support variable resolution \cite{Skamarock2012}. Collectively, these models show that modern numerical forecasting advances primarily through improved discretization, conservation, and parallel scalability rather than through replacing physics-based simulation altogether.
+
+\subsection{Purely Machine Learning}
+
+Building on the success of large language models and the substantial reduction in the computational cost of machine learning inference, largely enabled by specialized hardware such as graphics processing units (GPUs), recent years have seen increasing use of large-scale machine learning (ML) methods for atmospheric simulation. These models aim to infer atmospheric dynamics directly from data by learning mappings from one observed atmospheric state to a subsequent state.
+
+Of course, there is great variability in the chosen architectures. 
+\citet{keisler2022forecasting} framed forecasting as message passing on a spherical graph by encoding a latitude longitude grid onto an icosahedral mesh, evolving latent features, and decoding back to the grid. \citet{graphcast} kept the encode-process-decode template but introduced a refined multi-mesh hierarchy and a deep, unshared GNN processor to propagate information efficiently across scales. \citet{bi2022pangu} instead used a 3D Earth-specific transformer, coupling patch embeddings with a Swin-style encoder-decoder and an Earth-specific positional bias within shifted-window attention. \citet{fourcastnet} replaced quadratic attention with adaptive Fourier neural operators, using Fourier-domain token mixing inside a ViT-style backbone to learn global couplings efficiently. To represent forecast uncertainty, \citet{DBLP:journals/corr/abs-2312-15796} formulated ensemble generation as conditional diffusion, iteratively denoising candidate states with a GraphCast-related denoiser whose processor is a sparse transformer. Finally, \citet{aurora} pursued a foundation-model approach, combining Perceiver-based encoders and decoders with a 3D Swin transformer processor pretrained on heterogeneous Earth-system data and adapted via staged fine-tuning.
+
+
+\subsection{Hybrid Models}
+The most competitive hybrid model, NeuralGCM, was introduced by \citet{neuralgcm} and couples a fully differentiable spectral solver with multilayer perceptrons which act on vertical columns of the domain. The setup of this architecture means that the MLP used as the neural closure only "sees" a single vertical column, and lacks global context. Nevertheless, by supplying each small network with complex terrain and orography embeddings and spatial gradients, the model performs extremely well and remains stable over long prediction horizons. This might suggest that the neural closure is only learning local subgrid processes. However, while visualizing NeuralGCM's output tendencies reveals physically plausible signatures like surface heating and drag , the authors note that their architecture does not allow for the separation of different physical processes. Furthermore, the purely column-wise nature of their MLP completely obscures the model's horizontal scale selectivity. In contrast, by implementing our neural closure as a spatially connected Graph Neural Network (GNN), our setup becomes significantly more interpretable; because the GNN explicitly acts on horizontal structures, we can compute its Jacobian to quantitatively extract the exact spatial wavenumbers the network learns to damp or amplify.
+ 
+\subsection{Interpretability}
+
+As one of the main contributions of this work is to suggest a way to make hybrid models more interpretable empirically, it is important to discuss previous work on this topic. Several recent studies have introduced methods to empirically interpret learned subgrid closures and neural operators. 
+
+\citet{subel2023explaining} developed the Spectral Analysis of Regression Activations and Kernels framework to analyze convolutional neural networks in two-dimensional turbulence modeling. By transforming network weights into the frequency domain, they demonstrated that the network layers autonomously function as explicit physical spectral filters, bridging the energy gap between resolved and subgrid scales.
+
+Similarly focusing on spectral characteristics, \citet{guan2022stable} evaluated a neural network closure by mapping its spatial outputs into the frequency domain to trace inter-scale kinetic energy transfers. Their analysis proved that the network simultaneously applies forward numerical diffusion for stability and physical energy backscattering to restore missing subgrid variance.
+
+In the realm of differential analysis, \cite{Portwood2021} computed the exact mathematical derivatives of an artificial neural network's predictions with respect to localized flow gradients. By visualizing the joint probability density functions of these sensitivities, they revealed that the unguided network dynamically balanced functional dissipation and structural reconstruction, naturally mirroring classical mixed-model theories.
+
+Approaching interpretability through mathematical transparency, \citet{zanna2020data} employed a sparsity-promoting relevance vector machine to discover closed-form symbolic equations for ocean mesoscale eddy closures. Direct algebraic analysis of the resulting equations confirmed that the model autonomously recovered theoretically grounded advection-diffusion forms, embedding essential conservation laws directly into its structure.
+
+Finally, \citet{ross2023benchmarking} provided a macroscopic perspective by systematically benchmarking deep neural networks against these interpretable symbolic closures in prognostic ocean simulations. Their long-term spectral backscatter and kinetic energy evaluations highlighted a fundamental trade-off, showing that while symbolic closures offer elegant algebraic transparency, highly dimensional neural networks are uniquely capable of maintaining the energetic fidelity required for long-term structural stability. Collectively, these methodologies underscore the transition from treating neural closures as opaque black boxes to interrogating them as mathematically defined physical operators, directly aligning with the Jacobian-based modal gain analysis proposed in our methodology.

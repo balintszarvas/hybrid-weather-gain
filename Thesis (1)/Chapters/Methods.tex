@@ -1,0 +1,344 @@
+\chapter{Methods}
+\label{Methods}
+
+In this section we describe the hybrid, fully differentiable weather forecasting model that combines a spectral numerical core with a graph neural network (GNN) used as a neural closure. The overall design follows the general structure of differentiable global circulation models such as \textsc{NeuralGCM} \cite{neuralgcm}, but adapts it to our specific discretisation closure formulation. We first describe the data handling pipeline (interpolation, normalisation), then the numerical core (spectral representation, time integration, filtering), and finally the neural closure that augments the physical tendencies. After introducing the main components of the model, we formulate the spectral gain experiment which aims to uncover what processes and on what spatial scales does the neural closure learn to interact with.
+
+\subsection{Data sources and variables}
+\label{sec:datatraining}
+We use the ERA5 global atmospheric reanalysis \cite{hersbach2020era5} through the public WeatherBench2 archive, specifically the Zarr dataset. In the implemented pipeline, this provides global 6-hourly fields on a \(240 \times 121\) equiangular latitude--longitude grid on pressure levels, from which we extract the variables required by the hybrid model.
+
+The raw ERA5 inputs are the zonal and meridional wind components \(u\) and \(v\), temperature \(T\), geopotential \(\Phi\), specific humidity \(q\), and surface pressure \(p_s\). These fields are first vertically interpolated from pressure levels to \(13\) equidistant sigma levels using the surface pressure field. The winds are then converted to vorticity \(\zeta\) and divergence \(\delta\), temperature is recast as a temperature variation \(T'\) about a reference profile, and surface pressure is represented as \(\log p_s\). After this preprocessing, the state is transformed to spectral space and spectrally interpolated from the source equiangular grid to the Gaussian grids used by the dynamical core. In the experiments reported here, the horizontal resolutions are TL31, TL47, TL63, TL95, and TL127, corresponding to nodal grid sizes \(96 \times 49\), \(144 \times 73\), \(192 \times 97\), \(288 \times 145\), and \(384 \times 193\), respectively. The resulting modal states are cached per time step and loaded on demand during training.
+
+
+\subsection{Normalisation}
+To stabilise training and to make variables with different physical scales commensurate, we normalise each variable channel-wise. For a variable $x$ we compute dataset statistics
+\begin{equation}
+  \mu_x = \mathbb{E}[x], \qquad \sigma_x = \sqrt{\mathbb{V}[x]} + \epsilon,
+\end{equation}
+where the expectation and variance are computed over space, time, and samples, and $\epsilon$ is a small constant to avoid division by zero.
+The normalised variable is
+\begin{equation}
+  \tilde{x} = \frac{x - \mu_x}{\sigma_x}.
+\end{equation}
+All learnable components (in particular the GNN closure) operate on normalised variables. During inference we invert this transformation to obtain physical units. The same statistics are reused across training, evaluation and the gain experiments to ensure consistency.
+
+\section{Numerical Core}
+\label{sec:numerical-core}
+
+\subsection{Spectral representation}
+The resolved model state is denoted by $\widetilde{g}$, in accordance with the notation introduced in Section~\ref{sec:formal_closure}. Its components consist of the prognostic variables of the primitive-equation core represented in spectral space. For a scalar component $f(\lambda,\phi)$ on the sphere, we write
+\begin{equation}
+  f(\lambda, \phi)
+  = \sum_{n=0}^{T_{\max}} \sum_{m=-n}^{n} \hat{f}_{n}^{m} Y_{n}^{m}(\lambda, \phi),
+\end{equation}
+where $Y_n^m$ are the fully normalised spherical harmonics and $\hat{f}_n^m$ are the corresponding spectral coefficients. Vector-valued components of $\widetilde{g}$, such as horizontal velocity, are represented component-wise. The forward and inverse spherical harmonic transforms are implemented with FFT-based algorithms and remain differentiable.
+
+In this representation, horizontal differential operators become algebraic operations on spectral coefficients. For example, for any scalar component $f$ of the resolved state,
+\begin{equation}
+  \widehat{(\nabla^2 f)}_n^m = -n(n+1)\hat{f}_n^m.
+\end{equation}
+
+\subsection{Time integration: IMEX-SI(L)}
+For time stepping, we further decompose the resolved operator $\mathcal{R}$ into an implicit and an explicit part,
+\begin{equation}
+  \mathcal{R}(\widetilde{g},\mu)
+  =
+  \mathcal{R}^{\mathrm{imp}}(\widetilde{g},\mu)
+  +
+  \mathcal{R}^{\mathrm{exp}}(\widetilde{g},\mu),
+\end{equation}
+where $\mathcal{R}^{\mathrm{imp}}$ contains the stiff resolved contributions (for example fast-wave terms), while $\mathcal{R}^{\mathrm{exp}}$ contains the remaining non-stiff resolved contributions.
+
+It is important to stress that this implicit--explicit decomposition is \emph{not} the same as the decomposition of the hybrid model into resolved and learned parts. Both $\mathcal{R}^{\mathrm{imp}}$ and $\mathcal{R}^{\mathrm{exp}}$ act on the resolved primitive-equation state and together constitute the mechanistic core $\mathcal{R}$. The learned correction $\operatorname{nn}_\theta$ is a separate term in the reduced model and is not identified with the explicit part merely by notation.
+
+With this distinction made explicit, the time-continuous hybrid model becomes
+\begin{equation}
+  \frac{\mathrm{d}\widetilde{g}}{\mathrm{d}t}
+  =
+  \underbrace{\mathcal{R}^{\mathrm{imp}}(\widetilde{g},\mu)}_{\text{implicit resolved part}}
+  +
+  \underbrace{\mathcal{R}^{\mathrm{exp}}(\widetilde{g},\mu)}_{\text{explicit resolved part}}
+  +
+  \underbrace{\operatorname{nn}_\theta(\widetilde{g},\mu)}_{\text{learned closure}}.
+\end{equation}
+
+Given $\widetilde{g}^n$ at time $t_n$, one IMEX step to $t_{n+1}=t_n+\Delta t$ reads
+\begin{equation}
+  \widetilde{g}^{n+1}
+  -
+  \Delta t\,\eta\,\mathcal{R}^{\mathrm{imp}}(\widetilde{g}^{n+1},\mu)
+  =
+  \widetilde{g}^n
+  +
+  \Delta t\Big[
+    (1-\eta)\mathcal{R}^{\mathrm{imp}}(\widetilde{g}^n,\mu)
+    + \mathcal{R}^{\mathrm{exp}}(\widetilde{g}^n,\mu)
+    + \operatorname{nn}_\theta(\widetilde{g}^n,\mu)
+  \Big],
+  \label{eq:imex}
+\end{equation}
+where $\eta\in[0,1]$ controls the degree of implicitness. Since the stiff linear part of the resolved core is diagonal or block-diagonal in spectral space, the update reduces to independent small linear solves for each $(n,m)$ mode, which makes the scheme efficient and differentiable.
+
+\begin{table}[h]
+    \centering
+    \label{tab:sil3_tableau}
+    \begin{tabular}{c|cccc}
+        $c$ & \multicolumn{4}{c}{$A$} \\ \hline
+        1/3 & 1/3 & & & \\
+        2/3 & 1/6 & 1/2 & & \\
+        1   & 1/2 & -1/2 & 1 & \\ \hline
+            & 1/2 & -1/2 & 1 & 0
+    \end{tabular}
+    \qquad
+    \begin{tabular}{c|cccc}
+        $\tilde{c}$ & \multicolumn{4}{c}{$\tilde{A}$} \\ \hline
+        1/3 & 1/6 & 1/6 & & \\
+        1/3 & 0   & 1/3 & & \\
+        1   & 3/8 & 0   & 3/8 & 1/4 \\ \hline
+            & 3/8 & 0   & 3/8 & 1/4
+    \end{tabular}
+    \caption{Butcher tableau for the SIL3 IMEX scheme.}
+\end{table}
+
+\subsection{Spectral filtering}
+\label{subsec:filtering}
+High-wavenumber modes in spectral models can accumulate aliasing errors and spurious energy, especially when nonlinear products are evaluated in physical space. Following common practice and the \textsc{NeuralGCM} setup, we apply a spectral filter to the prognostic variables after each time step (or after each pair of transforms). Let $\hat{f}_{n}^{m}$ be the coefficient of total wavenumber $n$. We define a filter function $\sigma(n) \in [0,1]$ such as
+\begin{equation}
+  \sigma(n) =
+  \begin{cases}
+    1, & n \le n_c, \\
+    \exp\left( -\alpha \left( \dfrac{n - n_c}{T_{\max} - n_c} \right)^p \right), & n_c < n \le T_{\max},
+  \end{cases}
+\end{equation}
+with cutoff $n_c < T_{\max}$, strength $\alpha>0$, and order $p \ge 1$. The filtered coefficient is
+\begin{equation}
+  \hat{f}_{n}^{m} \leftarrow \sigma(n) \, \hat{f}_{n}^{m}.
+\end{equation}
+This operation is linear, mode-wise, and therefore trivially differentiable. In practice, the filter improves stability and reduces the burden on the neural closure to correct for purely numerical artefacts.
+
+\section{Neural Closure - GCN}
+\label{sec:neural-closure}
+
+\subsection{Graph construction}
+We define a graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ whose nodes $i \in \mathcal{V}$ correspond to grid points on the model grid in physical (rather than spectral) space. This physical-space representation is obtained from the spectral model state $\Tilde{g}$ via the inverse spherical harmonic transform $\mathcal{T}^{-1}$. Two nodes are connected if they are adjacent in latitude--longitude indexing or lie within a fixed geodesic radius.
+
+Each node $i$ is associated with an initial feature vector
+\begin{equation}
+  \mathbf{h}_i^{(0)}
+  =
+  \bigl[
+    z_1(\lambda_i,\phi_i), \dots, z_{N_{\text{var}}}(\lambda_i,\phi_i),
+    \mathrm{aux}(\lambda_i,\phi_i)
+  \bigr],
+\end{equation}
+where $z_1,\dots,z_{N_{\text{var}}}$ denote the componentwise normalised prognostic variables obtained from $\mathcal{T}^{-1}(\Tilde{g})$, as described in Section~\ref{sec:datatraining}, and $\mathrm{aux}$ contains static auxiliary fields such as orography and the land--sea mask. These auxiliary inputs are passed only to the neural correction and are not themselves prognostic variables of the dynamical core. The graph connectivity is fixed over time, so all message-passing layers act on the same graph structure.
+
+\subsection{GNN architecture}
+The learned correction $\mathrm{nn}_{\theta}$ is implemented as a stack of $L$ message-passing layers. A generic layer updates node features according to
+\begin{align}
+  \mathbf{m}_{ij}^{(\ell)}
+  &= \psi_{\theta}^{(\ell)}\!\left(\mathbf{h}_i^{(\ell)}, \mathbf{h}_j^{(\ell)}, \mathbf{e}_{ij}\right),
+  \quad (i,j) \in \mathcal{E}, \\
+  \bar{\mathbf{m}}_i^{(\ell)}
+  &= \mathrm{AGG}_{j \in \mathcal{N}(i)} \mathbf{m}_{ij}^{(\ell)}, \\
+  \mathbf{h}_i^{(\ell+1)}
+  &= \phi_{\theta}^{(\ell)}\!\left(\mathbf{h}_i^{(\ell)}, \bar{\mathbf{m}}_i^{(\ell)}\right),
+\end{align}
+where $\psi_{\theta}^{(\ell)}$ and $\phi_{\theta}^{(\ell)}$ are small MLPs, $\mathbf{e}_{ij}$ encodes edge attributes such as relative position or great-circle distance, and $\mathrm{AGG}$ is the mean in our setting. After $L$ layers, the final node embeddings are projected to nodal correction tendencies:
+\begin{equation}
+  \boldsymbol{\delta}_i
+  =
+  W_{\mathrm{out}} \mathbf{h}_i^{(L)} + b_{\mathrm{out}}.
+\end{equation}
+Collecting these outputs over all nodes yields a correction field in physical space, which is then mapped back to the model representation to define the learned closure term $\mathrm{nn}_{\theta}(\Tilde{g}, \mu)$.
+
+\subsection{Training Objective}
+For each training sample $k$, we initialise the hybrid model from a reduced reference state and unroll it for
+\[
+S \in \{1, 2, 3, 4, 6, 8, 10\}
+\]
+time steps. This produces model states $\Tilde{g}_{t+s}^{(k)}$ for $s=1,\dots,S$, while the corresponding reduced ERA5 targets are denoted by $\Tilde{q}_{t+s}^{(k)}$. The training loss is the mean-squared error in physical space:
+\begin{equation}
+  \textit{L}_{\theta}
+  =
+  \frac{1}{K S}
+  \sum_{k=1}^{K}
+  \sum_{s=1}^{S}
+  \bigl\|
+    \mathcal{T}^{-1}\!\left(\Tilde{g}_{t+s}^{(k)}\right)
+    -
+    \Tilde{q}_{t+s}^{(k)}
+  \bigr\|_2^2,
+\end{equation}
+where $\mathcal{T}^{-1}$ denotes the inverse spherical harmonic transform from spectral to physical space. In this notation, $\Tilde{g}$ denotes the state generated by the hybrid model, whereas $\Tilde{q}$ denotes the corresponding reduced reference trajectory.
+
+
+\subsection{Resolution-aware scaling of the GNN correction capacity}
+\label{sec:gnn_scaling}
+Across spectral resolutions (TL31--TL127), the GNN correction is applied on the nodal grid, so the number of graph nodes scales approximately with the number of grid points, \(N\).
+To keep the \emph{overall} correction-model compute and memory footprint comparable across resolutions while preserving the same architectural form (two hidden layers), we scale the per-node hidden width \(d\) inversely with \(\sqrt{N}\).
+This follows from the dominant cost of message-passing blocks with learned linear maps, which scales as \(\mathcal{O}(N d^{2})\) (and similarly for activation memory).
+
+For example, the TL31 grid has hidden dimension \(d=256\), whereas the TL127 has \(d=64\)).
+Since TL127 has roughly \(\sim 16\times\) more nodes than TL31, reducing width by \(4\times\) (from \(256\) to \(64\)) keeps \(N d^{2}\) approximately constant:
+\[
+N_{127} \approx 16\,N_{31}, \qquad d_{127} = \tfrac{1}{4} d_{31}
+\;\Rightarrow\;
+N_{127} d_{127}^{2} \approx N_{31} d_{31}^{2}.
+\]
+This choice is sensible because it controls wall-clock cost and regularizes the correction at higher resolution (where the graph is much larger), while allowing a wider per-node representation at lower resolution (where \(N\) is smaller) without changing the overall model class or training protocol.
+
+\section{Spectral--harmonic gain experiment}
+\label{sec:gain-experiment}
+
+To characterise \emph{what} spatial structures the learned correction injects
+or damps, we analyse the correction as a standalone operator.  In this
+subsection we therefore view
+\[
+  C_{\theta} \;:\; \tilde{g} \;\mapsto\; C_{\theta}(\tilde{g})
+\]
+as an operator acting on the resolved spectral state~$\tilde{g}$, with
+all trainable parameters~$\theta$ fixed.  We study its linearisation
+around representative resolved states obtained from coupled hybrid
+rollouts.
+
+Let $\bar{\tilde{g}}$ be such a state and let
+\begin{equation}
+  \mathbf{J}_{C}(\bar{\tilde{g}})
+  :=
+  \left.
+    \frac{\partial\, C_{\theta}(\tilde{g})}
+         {\partial\, \tilde{g}}
+  \right|_{\tilde{g}=\bar{\tilde{g}}}
+\end{equation}
+denote the Jacobian of the learned correction at~$\bar{\tilde{g}}$.
+This Jacobian is well defined because $C_{\theta}$ is a composition of
+differentiable operations (transforms, graph message passing,
+de-normalisation, and spectral lifting).  We never form
+$\mathbf{J}_{C}$ explicitly, instead we evaluate Jacobian--vector
+products (JVPs) via automatic differentiation.
+
+We evaluate the Jacobian in the physically relevant direction given by
+the explicit dynamical-core tendency
+\begin{equation}
+  F(\bar{\tilde{g}})
+  :=
+  \mathcal{D}_{\mathrm{explicit}}\!\bigl(\bar{\tilde{g}}\bigr),
+\end{equation}
+where $\mathcal{D}_{\mathrm{explicit}}$ is the explicit part of the
+primitive-equations right-hand side.  The corrected tendency is then
+$F + \mathbf{J}_{C}\,F$, and the question becomes: does the closure
+amplify or damp the energy that was already being injected by the
+dynamical core at each spatial scale?
+
+For a spectral field $u$ with spherical-harmonic coefficients
+$\hat{u}_{\ell}^{m}$, define the power at total wavenumber~$\ell$ and
+vertical level~$k$ by
+\begin{equation}
+  P_{\ell,k}(u)
+  :=
+  \sum_{m} \bigl|\hat{u}_{\ell,k}^{m}\bigr|^{2}.
+\end{equation}
+We use the temperature-variation field as the representative prognostic
+variable.  Writing $F$ and $JF := \mathbf{J}_{C}(\bar{\tilde{g}})\,F$
+for the dynamical-core tendency and the Jacobian--tendency product
+respectively, the \emph{net energy gain} at wavenumber~$\ell$ and
+level~$k$ is
+\begin{equation}\label{eq:net-gain}
+  G_{\ell,k}(\bar{\tilde{g}})
+  :=
+  \frac{\|F + JF\|_{\ell,k}^{2}}{\|F\|_{\ell,k}^{2}}
+  =
+  \frac{P_{\ell,k}(F + JF)}{P_{\ell,k}(F)}.
+\end{equation}
+Expanding the numerator yields the equivalent form
+\begin{equation}
+  G_{\ell,k}
+  =
+  1
+  \;+\;
+  \underbrace{
+    \frac{2\,\operatorname{Re}\!\sum_{m}
+          \hat{F}_{\ell,k}^{m*}\,\widehat{JF}_{\ell,k}^{\,m}}
+         {P_{\ell,k}(F)}
+  }_{=:\,I_{\ell,k}\;\text{(signed interaction)}}
+  \;+\;
+  \frac{P_{\ell,k}(JF)}{P_{\ell,k}(F)},
+\end{equation}
+where $I_{\ell,k}$ is the normalised cross-term that carries the sign of the
+correction's projection onto the dynamical-core tendency.
+
+Because $G_{\ell,k}$ is a ratio of squared norms it is non-negative.
+Its interpretation is:
+\begin{itemize}
+  \item $G_{\ell,k} = 1$: the correction has no net effect on the
+        tendency energy at scale~$\ell$;
+  \item $G_{\ell,k} < 1$: the correction \emph{damps} that scale
+        (reduces the tendency energy);
+  \item $G_{\ell,k} > 1$: the correction \emph{amplifies} that scale
+        (increases the tendency energy).
+\end{itemize}
+
+Since the learned correction is state dependent, we repeat this
+analysis over an ensemble of representative resolved states
+$\{\bar{\tilde{g}}^{(s)}\}_{s=1}^{S}$ sampled from different times
+and flow regimes during coupled rollouts on the 2020 test period.
+To obtain a scale-only summary we first average the gain over vertical
+levels:
+\begin{equation}
+  G_{\ell}(\bar{\tilde{g}}^{(s)})
+  :=
+  \frac{1}{K}\sum_{k=1}^{K}
+    G_{\ell,k}(\bar{\tilde{g}}^{(s)}),
+\end{equation}
+and then report the ensemble-mean gain
+\begin{equation}
+  \bar{G}_{\ell}
+  :=
+  \frac{1}{S}\sum_{s=1}^{S}
+    G_{\ell}\!\bigl(\bar{\tilde{g}}^{(s)}\bigr).
+\end{equation}
+This averaging filters out flow-specific fluctuations and reveals the
+persistent spectral footprint of the learned correction: wavenumbers
+with $\bar{G}_{\ell} < 1$ indicate scales where the neural network
+plays a stabilising, dissipation-like role, while wavenumbers with
+$\bar{G}_{\ell} > 1$ indicate scales where it systematically reinforces
+variability.
+
+For easier interpretation we also report the empirical fraction of
+ensemble members for which a given wavenumber~$\ell$ is amplified or
+damped.  For a fixed lead time~$\tau$, let
+$\{\bar{\tilde{g}}^{(s)}(\tau)\}_{s=1}^{S}$ denote the sampled
+resolved states and $G_{\ell}\!\bigl(\bar{\tilde{g}}^{(s)}(\tau)\bigr)$
+the corresponding net gain.  We define
+\begin{align}
+  f^{+}_{\ell}(\tau)
+  &:=
+  \frac{1}{S}\sum_{s=1}^{S}
+    \mathbf{1}\!\bigl\{
+      G_{\ell}\!\bigl(\bar{\tilde{g}}^{(s)}(\tau)\bigr) > 1
+    \bigr\},
+  \\
+  f^{-}_{\ell}(\tau)
+  &:=
+  \frac{1}{S}\sum_{s=1}^{S}
+    \mathbf{1}\!\bigl\{
+      G_{\ell}\!\bigl(\bar{\tilde{g}}^{(s)}(\tau)\bigr) < 1
+    \bigr\},
+\end{align}
+which are empirical frequencies rather than probabilities.  To obtain a
+single summary statistic per lead time we average over the set of
+resolved wavenumbers
+$\mathcal{L} = \{0,\dots,L_{\max}\}$ determined by the spectral
+truncation (e.g.\ $L_{\max}=127$ for TL$127$):
+\begin{equation}
+  f^{\pm}(\tau)
+  :=
+  \frac{1}{|\mathcal{L}|}\sum_{\ell \in \mathcal{L}}
+    f^{\pm}_{\ell}(\tau).
+\end{equation}
+
+This experiment is fully consistent with the differentiable
+architecture: each JVP uses the same learned operator and the same
+transforms as in training and coupled forecasting, so the measured gains
+reflect the actual correction operator used in the hybrid model.
