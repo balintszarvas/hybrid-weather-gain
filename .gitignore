@@ -66,3 +66,11 @@ gmon.out
 
 # Tensorboard
 tensorboard_logs/
+
+# Excluded from public repo
+Thesis (1)/
+figures/
+notebook_dinosaur/
+print_missing.py
+list_weatherbench_results.sh
+threed_gnn_correction.py
